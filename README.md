@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Status](https://img.shields.io/badge/status-active-green.svg)
 
-CryptoTrader is a comprehensive, AI-powered cryptocurrency trading system that combines market analysis, sentiment detection, and multi-timeframe prediction with automated trade execution across both centralized and decentralized exchanges.
+Tokenetics is a comprehensive, AI-powered cryptocurrency trading system that combines market analysis, sentiment detection, and multi-timeframe prediction with automated trade execution across both centralized and decentralized exchanges.
 
 ## ✨ Features
 

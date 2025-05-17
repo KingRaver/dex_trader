@@ -16,11 +16,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.remote.webdriver import WebDriver
 import random
 import statistics
 import threading
 import queue
 import json
+from typing import Dict, List, Optional, Any, Union, Tuple
 from llm_provider import LLMProvider
 from database import CryptoDatabase
 
@@ -46,12 +48,17 @@ class CryptoAnalysisBot:
     """
 
     def __init__(self, database, llm_provider, config=None):
+        self.browser = browser
+        if config is None:
+            from config import config as imported_config
+            self.config = imported_config
+        else:
+            self.config = config
         """
         Initialize the crypto analysis bot with improved configuration and tracking.
         Sets up connections to browser, database, and API services.
         """
         self.browser = browser
-        self.config = config
         self.llm_provider = LLMProvider(self.config)  
         self.past_predictions = []
         self.meme_phrases = MEME_PHRASES
@@ -78,7 +85,7 @@ class CryptoAnalysisBot:
        
         # Initialize prediction engine with database and LLM Provider
         self.prediction_engine = EnhancedPredictionEngine(
-            database=self.config.db,
+            database=self.db,
             llm_provider=self.llm_provider
         )
        
@@ -157,9 +164,9 @@ class CryptoAnalysisBot:
         }
        
         # Initialize reply functionality components
-        self.timeline_scraper = TimelineScraper(self.browser, self.config, self.config.db)
+        self.timeline_scraper = TimelineScraper(self.browser, self.config, self.db)
         self.reply_handler = ReplyHandler(self.browser, self.config, self.llm_provider, self.coingecko, self.config.db)
-        self.content_analyzer = ContentAnalyzer(self.config, self.config.db)
+        self.content_analyzer = ContentAnalyzer(self.config, self.db)
        
         # Reply tracking and control
         self.last_reply_check = strip_timezone(datetime.now() - timedelta(minutes=30))  # Start checking soon
@@ -638,7 +645,7 @@ class CryptoAnalysisBot:
             logger.log_error("Crypto Accounts Reply Strategy", str(e))
             return False
 
-    def _get_historical_volume_data(self, chain: str, minutes: int = None, timeframe: str = "1h") -> List[Dict[str, Any]]:
+    def _get_historical_volume_data(self, chain: str, minutes: Optional[int] = None, timeframe: str = "1h") -> List[Dict[str, Any]]:
         """
         Get historical volume data for the specified window period
         Adjusted based on timeframe for appropriate historical context
@@ -849,14 +856,20 @@ class CryptoAnalysisBot:
     def _login_to_twitter(self) -> bool:
         """
         Log into Twitter with enhanced verification and detection of existing sessions
-        
+    
         Returns:
             Boolean indicating login success
         """
         try:
             logger.logger.info("Starting Twitter login")
-            self.browser.driver.set_page_load_timeout(45)
         
+            # Check if browser and driver are properly initialized
+            if not self.browser or not self.browser.driver:
+                logger.logger.error("Browser or driver not initialized")
+                return False
+            
+            self.browser.driver.set_page_load_timeout(45)
+    
             # First navigate to Twitter home page instead of login page directly
             self.browser.driver.get('https://twitter.com')
             time.sleep(5)
@@ -889,7 +902,7 @@ class CryptoAnalysisBot:
                 )
                 username_field.click()
                 time.sleep(1)
-                username_field.send_keys(self.config.TWITTER_USERNAME)
+                username_field.send_keys(config.TWITTER_USERNAME)
                 time.sleep(2)
 
                 next_button = WebDriverWait(self.browser.driver, 10).until(
@@ -920,32 +933,71 @@ class CryptoAnalysisBot:
 
     def _verify_login(self) -> bool:
         """
-        Verify Twitter login success
-        
+        Verify Twitter login success with improved error handling and type safety.
+    
         Returns:
             Boolean indicating if login verification succeeded
         """
         try:
+            # First check if browser and driver are properly initialized
+            if not self.browser:
+                logger.logger.error("Browser not initialized")
+                return False
+            
+            if not hasattr(self.browser, 'driver') or self.browser.driver is None:
+                logger.logger.error("Browser driver not initialized")
+                return False
+            
+            # Store a local reference to driver with proper type annotation
+            driver: Optional[WebDriver] = self.browser.driver
+        
+            # Define verification methods that use the driver variable directly
+            def check_new_tweet_button() -> bool:
+                try:
+                    element = WebDriverWait(driver, 30).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="SideNav_NewTweet_Button"]'))
+                    )
+                    return element is not None
+                except Exception:
+                    return False
+                
+            def check_profile_link() -> bool:
+                try:
+                    element = WebDriverWait(driver, 30).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="AppTabBar_Profile_Link"]'))
+                    )
+                    return element is not None
+                except Exception:
+                    return False
+                
+            def check_url_contains_home() -> bool:
+                try:
+                    if driver and driver.current_url:
+                        return any(path in driver.current_url for path in ['home', 'twitter.com/home'])
+                    return False
+                except Exception:
+                    return False
+        
+            # Use proper function references instead of lambdas to improve type safety
             verification_methods = [
-                lambda: WebDriverWait(self.browser.driver, 30).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="SideNav_NewTweet_Button"]'))
-                ),
-                lambda: WebDriverWait(self.browser.driver, 30).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="AppTabBar_Profile_Link"]'))
-                ),
-                lambda: any(path in self.browser.driver.current_url 
-                          for path in ['home', 'twitter.com/home'])
+                check_new_tweet_button,
+                check_profile_link,
+                check_url_contains_home
             ]
-           
+        
+            # Try each verification method
             for method in verification_methods:
                 try:
                     if method():
+                        logger.logger.info("Login verification successful")
                         return True
-                except:
+                except Exception as method_error:
+                    logger.logger.debug(f"Verification method failed: {str(method_error)}")
                     continue
-           
+        
+            logger.logger.warning("All verification methods failed - user not logged in")
             return False
-           
+        
         except Exception as e:
             logger.log_error("Login Verification", str(e))
             return False
@@ -1008,6 +1060,9 @@ class CryptoAnalysisBot:
         retry_count = 0
     
         while retry_count < max_retries:
+            if not self.browser or not self.browser.driver:
+                logger.logger.error("Browser or driver not initialized for tweet composition")
+                return False
             try:
                 self.browser.driver.get('https://twitter.com/compose/tweet')
                 time.sleep(3)
@@ -1080,7 +1135,7 @@ class CryptoAnalysisBot:
     def _get_last_posts(self, count: int = 10) -> List[Dict[str, Any]]:
         """
         Get last N posts from timeline with timeframe detection
-        
+    
         Args:
             count: Number of posts to retrieve
             
@@ -1089,39 +1144,44 @@ class CryptoAnalysisBot:
         """
         max_retries = 3
         retry_count = 0
-    
+
         while retry_count < max_retries:
             try:
+                # Check if browser and driver are properly initialized
+                if not self.browser or not hasattr(self.browser, 'driver') or self.browser.driver is None:
+                    logger.logger.error("Browser or driver not initialized for timeline scraping")
+                    return []
+            
                 self.browser.driver.get(f'https://twitter.com/{self.config.TWITTER_USERNAME}')
                 time.sleep(3)
-            
+        
                 # Use explicit waits to ensure elements are loaded
                 WebDriverWait(self.browser.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="tweetText"]'))
                 )
-            
+        
                 posts = self.browser.driver.find_elements(By.CSS_SELECTOR, '[data-testid="tweetText"]')
-            
+        
                 # Use an explicit wait for timestamps too
                 WebDriverWait(self.browser.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'time'))
                 )
-            
+        
                 timestamps = self.browser.driver.find_elements(By.CSS_SELECTOR, 'time')
-            
+        
                 # Get only the first count posts
                 posts = posts[:count]
                 timestamps = timestamps[:count]
-            
+        
                 result = []
                 for i in range(min(len(posts), len(timestamps))):
                     try:
                         post_text = posts[i].text
                         timestamp_str = timestamps[i].get_attribute('datetime') if timestamps[i].get_attribute('datetime') else None
-                    
+                
                         # Detect timeframe from post content
                         detected_timeframe = "1h"  # Default
-                    
+                
                         # Look for timeframe indicators in the post
                         if "7D PREDICTION" in post_text.upper() or "7-DAY" in post_text.upper() or "WEEKLY" in post_text.upper():
                             detected_timeframe = "7d"
@@ -1129,26 +1189,26 @@ class CryptoAnalysisBot:
                             detected_timeframe = "24h"
                         elif "1H PREDICTION" in post_text.upper() or "1-HOUR" in post_text.upper() or "HOURLY" in post_text.upper():
                             detected_timeframe = "1h"
-                    
+                
                         post_info = {
                             'text': post_text,
                             'timestamp': strip_timezone(datetime.fromisoformat(timestamp_str)) if timestamp_str else None,
                             'timeframe': detected_timeframe
                         }
-                    
+                
                         result.append(post_info)
                     except Exception as element_error:
                         # Skip this element if it's stale or otherwise problematic
                         logger.logger.debug(f"Element error while extracting post {i}: {str(element_error)}")
                         continue
-            
+        
                 return result
             
             except Exception as e:
                 retry_count += 1
                 logger.logger.warning(f"Error getting last posts (attempt {retry_count}/{max_retries}): {str(e)}")
                 time.sleep(2)  # Add a small delay before retry
-            
+        
         # If all retries failed, log the error and return an empty list
         logger.log_error("Get Last Posts", f"Maximum retries ({max_retries}) reached")
         return []
@@ -1173,10 +1233,10 @@ class CryptoAnalysisBot:
         return filtered_posts[:count]
 
     @ensure_naive_datetimes
-    def _schedule_timeframe_post(self, timeframe: str, delay_hours: float = None) -> None:
+    def _schedule_timeframe_post(self, timeframe: str, delay_hours: Optional[float] = None) -> None:
         """
         Schedule the next post for a specific timeframe
-        
+    
         Args:
             timeframe: Timeframe to schedule for
             delay_hours: Optional override for delay hours (otherwise uses default frequency)
@@ -1185,7 +1245,7 @@ class CryptoAnalysisBot:
             # Use default frequency with some randomness
             base_hours = self.timeframe_posting_frequency.get(timeframe, 1)
             delay_hours = base_hours * random.uniform(0.9, 1.1)
-        
+    
         self.next_scheduled_posts[timeframe] = strip_timezone(datetime.now() + timedelta(hours=delay_hours))
         logger.logger.debug(f"Scheduled next {timeframe} post for {self.next_scheduled_posts[timeframe]}")
    
@@ -1286,7 +1346,7 @@ class CryptoAnalysisBot:
                 }
             
                 # Store in database
-                self.config.db.store_posted_content(**storage_data)
+                self.db.store_posted_content(**storage_data)
             
                 # Update last post time for this timeframe with current datetime
                 # This is important - make sure we're storing a datetime object
@@ -1425,33 +1485,33 @@ class CryptoAnalysisBot:
     
         return success
 
-    def _analyze_tech_topics(self, market_data: Dict[str, Any] = None) -> Dict[str, Any]:
+    def _analyze_tech_topics(self, market_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Analyze tech topics for educational content generation
     
         Args:
             market_data: Optional market data for context
-        
+    
         Returns:
             Dictionary with tech topic analysis
         """
         try:
             # Get configured tech topics
-            tech_topics = self.config.get_tech_topics()
-        
+            tech_topics = config.get_tech_topics()
+    
             if not tech_topics:
                 logger.logger.warning("No tech topics configured or enabled")
                 return {'enabled': False}
-            
+        
             # Get recent tech posts from database
             tech_posts = {}
             last_tech_post = strip_timezone(datetime.now() - timedelta(days=1))  # Default fallback
-        
-            if self.config.db:
+    
+            if self.db:
                 try:
                     # Query last 24 hours of content
-                    recent_posts = self.config.db.get_recent_posts(hours=24)
-                
+                    recent_posts = self.db.get_recent_posts(hours=24)
+            
                     # Filter to tech-related posts
                     for post in recent_posts:
                         if 'tech_category' in post:
@@ -1459,21 +1519,21 @@ class CryptoAnalysisBot:
                             if category not in tech_posts:
                                 tech_posts[category] = []
                             tech_posts[category].append(post)
-                        
+                    
                             # Update last tech post time
                             post_time = strip_timezone(datetime.fromisoformat(post['timestamp']))
                             if post_time > last_tech_post:
                                 last_tech_post = post_time
                 except Exception as db_err:
                     logger.logger.warning(f"Error retrieving tech posts: {str(db_err)}")
-                
+            
             # Analyze topics for candidacy
             candidate_topics = []
-        
+    
             for topic in tech_topics:
                 category = topic['category']
                 posts_today = len(tech_posts.get(category, []))
-            
+        
                 # Calculate last post for this category
                 category_last_post = last_tech_post
                 if category in tech_posts and tech_posts[category]:
@@ -1483,10 +1543,10 @@ class CryptoAnalysisBot:
                     ]
                     if category_timestamps:
                         category_last_post = max(category_timestamps)
-            
+        
                 # Check if allowed to post about this category
-                allowed = self.config.is_tech_post_allowed(category, category_last_post)
-            
+                allowed = config.is_tech_post_allowed(category, category_last_post)
+        
                 if allowed:
                     # Prepare topic metadata
                     topic_metadata = {
@@ -1497,21 +1557,21 @@ class CryptoAnalysisBot:
                         'hours_since_last_post': safe_datetime_diff(datetime.now(), category_last_post) / 3600,
                         'selected_token': self._select_token_for_tech_topic(category, market_data)
                     }
-                
+            
                     # Add to candidates
                     candidate_topics.append(topic_metadata)
-        
+    
             # Order by priority and recency
             if candidate_topics:
                 candidate_topics.sort(key=lambda x: (x['priority'], x['hours_since_last_post']), reverse=True)
                 logger.logger.info(f"Found {len(candidate_topics)} tech topics eligible for posting")
-            
+        
                 # Return analysis results
                 return {
                     'enabled': True,
                     'candidate_topics': candidate_topics,
                     'tech_posts_today': sum(len(posts) for posts in tech_posts.values()),
-                    'max_daily_posts': self.config.TECH_CONTENT_CONFIG.get('max_daily_tech_posts', 6),
+                    'max_daily_posts': config.TECH_CONTENT_CONFIG.get('max_daily_tech_posts', 6),
                     'last_tech_post': last_tech_post
                 }
             else:
@@ -1520,22 +1580,22 @@ class CryptoAnalysisBot:
                     'enabled': True,
                     'candidate_topics': [],
                     'tech_posts_today': sum(len(posts) for posts in tech_posts.values()),
-                    'max_daily_posts': self.config.TECH_CONTENT_CONFIG.get('max_daily_tech_posts', 6),
+                    'max_daily_posts': config.TECH_CONTENT_CONFIG.get('max_daily_tech_posts', 6),
                     'last_tech_post': last_tech_post
                 }
-        
+    
         except Exception as e:
             logger.log_error("Tech Topic Analysis", str(e))
             return {'enabled': False, 'error': str(e)}
 
-    def _select_token_for_tech_topic(self, tech_category: str, market_data: Dict[str, Any] = None) -> str:
+    def _select_token_for_tech_topic(self, tech_category: str, market_data: Optional[Dict[str, Any]] = None) -> str:
         """
         Select an appropriate token to pair with a tech topic
     
         Args:
             tech_category: Tech category for pairing
-            market_data: Market data for context
-        
+            market_data: Market data for context, can be None
+    
         Returns:
             Selected token symbol
         """
@@ -1543,7 +1603,7 @@ class CryptoAnalysisBot:
             if not market_data:
                 # Default to a popular token if no market data
                 return random.choice(['BTC', 'ETH', 'SOL'])
-            
+        
             # Define affinity between tech categories and tokens
             tech_token_affinity = {
                 'ai': ['ETH', 'SOL', 'DOT'],          # Smart contract platforms
@@ -1551,31 +1611,31 @@ class CryptoAnalysisBot:
                 'blockchain_tech': ['ETH', 'SOL', 'BNB', 'NEAR'],  # Advanced platforms
                 'advanced_computing': ['SOL', 'AVAX', 'DOT']  # High performance chains
             }
-        
+    
             # Get affinity tokens for this category
             affinity_tokens = tech_token_affinity.get(tech_category, self.reference_tokens)
-        
+    
             # Filter to tokens with available market data
             available_tokens = [t for t in affinity_tokens if t in market_data]
-        
+    
             if not available_tokens:
                 # Fall back to reference tokens if no affinity tokens available
                 available_tokens = [t for t in self.reference_tokens if t in market_data]
-            
+        
             if not available_tokens:
                 # Last resort fallback
                 return random.choice(['BTC', 'ETH', 'SOL'])
-            
+        
             # Select token with interesting market movement if possible
             interesting_tokens = []
             for token in available_tokens:
                 price_change = abs(market_data[token].get('price_change_percentage_24h', 0))
                 if price_change > 5.0:  # >5% change is interesting
                     interesting_tokens.append(token)
-                
+            
             # Use interesting tokens if available, otherwise use all available tokens
             selection_pool = interesting_tokens if interesting_tokens else available_tokens
-        
+    
             # Select a token, weighting by market cap if possible
             if len(selection_pool) > 1:
                 # Extract market caps
@@ -1588,13 +1648,13 @@ class CryptoAnalysisBot:
             else:
                 # Just one token available
                 return selection_pool[0]
-            
+        
         except Exception as e:
             logger.log_error("Token Selection for Tech Topic", str(e))
             # Safe fallback
             return random.choice(['BTC', 'ETH', 'SOL'])
 
-    def _generate_tech_content(self, tech_category: str, token: str, market_data: Dict[str, Any] = None) -> Tuple[str, Dict[str, Any]]:
+    def _generate_tech_content(self, tech_category: str, token: str, market_data: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
         """
         Generate educational tech content for posting
     
@@ -1602,58 +1662,58 @@ class CryptoAnalysisBot:
             tech_category: Tech category to focus on
             token: Token to relate to tech content
             market_data: Market data for context
-        
+    
         Returns:
             Tuple of (content_text, metadata)
         """
         try:
             logger.logger.info(f"Generating tech content for {tech_category} related to {token}")
-        
+    
             # Get token data if available
             token_data = {}
             if market_data and token in market_data:
                 token_data = market_data[token]
-            
+        
             # Determine content type - integration or educational
             integration_prob = 0.7  # 70% chance of integration content
             is_integration = random.random() < integration_prob
-        
+    
             # Select appropriate audience level
             audience_levels = ['beginner', 'intermediate', 'advanced']
             audience_weights = [0.3, 0.5, 0.2]  # Bias toward intermediate
             audience_level = random.choices(audience_levels, weights=audience_weights, k=1)[0]
-        
+    
             # Select appropriate template
             template_type = 'integration_template' if is_integration else 'educational_template'
-            template = self.config.get_tech_prompt_template(template_type, audience_level)
-        
+            template = config.get_tech_prompt_template(template_type, audience_level)
+    
             # Prepare prompt variables
             prompt_vars = {
                 'tech_topic': tech_category.replace('_', ' ').title(),
                 'token': token,
                 'audience_level': audience_level,
-                'min_length': self.config.TWEET_CONSTRAINTS['MIN_LENGTH'],
-                'max_length': self.config.TWEET_CONSTRAINTS['MAX_LENGTH']
+                'min_length': config.TWEET_CONSTRAINTS['MIN_LENGTH'],
+                'max_length': config.TWEET_CONSTRAINTS['MAX_LENGTH']
             }
-        
+    
             if is_integration:
                 # Integration template - focus on connections
                 # Get token sentiment for mood
                 mood_words = ['enthusiastic', 'analytical', 'curious', 'balanced', 'thoughtful']
                 prompt_vars['mood'] = random.choice(mood_words)
-            
+        
                 # Add token price data if available
                 if token_data:
                     prompt_vars['token_price'] = token_data.get('current_price', 0)
                     prompt_vars['price_change'] = token_data.get('price_change_percentage_24h', 0)
-                
+            
                 # Get tech status summary
                 prompt_vars['tech_status'] = self._get_tech_status_summary(tech_category)
                 prompt_vars['integration_level'] = random.randint(3, 8)
-            
+        
                 # Use tech analysis prompt template if we have market data
                 if token_data:
-                    prompt = self.config.client_TECH_ANALYSIS_PROMPT.format(
+                    prompt = config.client_TECH_ANALYSIS_PROMPT.format(
                         tech_topic=prompt_vars['tech_topic'],
                         token=token,
                         price=token_data.get('current_price', 0),
@@ -1665,7 +1725,7 @@ class CryptoAnalysisBot:
                 else:
                     # Fall back to simpler template without market data
                     prompt = template.format(**prompt_vars)
-                
+            
             else:
                 # Educational template - focus on informative content
                 # Generate key points for educational content
@@ -1674,20 +1734,20 @@ class CryptoAnalysisBot:
                 prompt_vars['key_point_2'] = key_points[1]
                 prompt_vars['key_point_3'] = key_points[2]
                 prompt_vars['learning_objective'] = self._generate_learning_objective(tech_category)
-            
+        
                 # Format prompt with variables
                 prompt = template.format(**prompt_vars)
-        
+    
             # Generate content with LLM
             logger.logger.debug(f"Generating {tech_category} content with {template_type}")
             content = self.llm_provider.generate_text(prompt, max_tokens=1000)
-        
+    
             if not content:
                 raise ValueError("Failed to generate tech content")
-            
+        
             # Ensure content meets length requirements
             content = self._format_tech_content(content)
-        
+    
             # Prepare metadata for storage
             metadata = {
                 'tech_category': tech_category,
@@ -1698,9 +1758,9 @@ class CryptoAnalysisBot:
                 'token_data': token_data,
                 'timestamp': strip_timezone(datetime.now())
             }
-        
+    
             return content, metadata
-        
+    
         except Exception as e:
             logger.log_error("Tech Content Generation", str(e))
             # Return fallback content
@@ -1720,14 +1780,14 @@ class CryptoAnalysisBot:
         """
         try:
             # Check if content is already properly formatted
-            if len(content) > self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']:
+            if len(content) > config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']:
                 content = self._format_tech_content(content)
             
             # Format as a tweet
             tweet_text = content
         
             # Add a subtle educational hashtag if there's room
-            if len(tweet_text) < self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 20:
+            if len(tweet_text) < config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 20:
                 tech_category = metadata.get('tech_category', 'technology')
                 token = metadata.get('token', '')
             
@@ -1746,11 +1806,11 @@ class CryptoAnalysisBot:
                 
                     # Add tech hashtag and token
                     hashtag = random.choice(tech_hashtags)
-                    if len(tweet_text) + len(hashtag) + len(token) + 2 <= self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']:
+                    if len(tweet_text) + len(hashtag) + len(token) + 2 <= config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']:
                         tweet_text = f"{tweet_text} {hashtag}"
                     
                         # Maybe add token hashtag too
-                        if len(tweet_text) + len(token) + 2 <= self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']:
+                        if len(tweet_text) + len(token) + 2 <= config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']:
                             tweet_text = f"{tweet_text} #{token}"
         
             # Post to Twitter
@@ -1759,7 +1819,7 @@ class CryptoAnalysisBot:
                 logger.logger.info("Successfully posted tech content")
             
                 # Record in database
-                if self.config.db:
+                if self.db:
                     try:
                         # Extract token price data if available
                         token = metadata.get('token', '')
@@ -1805,29 +1865,29 @@ class CryptoAnalysisBot:
             Formatted content
         """
         # Ensure length is within constraints
-        if len(content) > self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']:
+        if len(content) > config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']:
             # Find a good sentence break to truncate
-            last_period = content[:self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 3].rfind('.')
-            last_question = content[:self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 3].rfind('?')
-            last_exclamation = content[:self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 3].rfind('!')
+            last_period = content[:config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 3].rfind('.')
+            last_question = content[:config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 3].rfind('?')
+            last_exclamation = content[:config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 3].rfind('!')
         
             # Find best break point
             break_point = max(last_period, last_question, last_exclamation)
         
-            if break_point > self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] * 0.7:
+            if break_point > config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] * 0.7:
                 # Good sentence break found
                 content = content[:break_point + 1]
             else:
                 # Find word boundary
-                last_space = content[:self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 3].rfind(' ')
+                last_space = content[:config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 3].rfind(' ')
                 if last_space > 0:
                     content = content[:last_space] + "..."
                 else:
                     # Hard truncate with ellipsis
-                    content = content[:self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 3] + "..."
+                    content = content[:config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 3] + "..."
     
         # Ensure minimum length is met
-        if len(content) < self.config.TWEET_CONSTRAINTS['MIN_LENGTH']:
+        if len(content) < config.TWEET_CONSTRAINTS['MIN_LENGTH']:
             logger.logger.warning(f"Tech content too short ({len(content)} chars). Minimum: {self.config.TWEET_CONSTRAINTS['MIN_LENGTH']}")
             # We won't try to expand too-short content
     
@@ -2059,7 +2119,7 @@ class CryptoAnalysisBot:
                                                     timeframe=timeframe)
             
             # Get historical prediction accuracy
-            perf_stats = self.config.db.get_prediction_performance(token=token, timeframe=timeframe)
+            perf_stats = self.db.get_prediction_performance(token=token, timeframe=timeframe)
             
             # Calculate accuracy score
             accuracy_score = 0
@@ -2075,7 +2135,7 @@ class CryptoAnalysisBot:
             recency_score = 0
             
             # Check when this token was last posted for this timeframe
-            recent_posts = self.config.db.get_recent_posts(hours=48, timeframe=timeframe)
+            recent_posts = self.db.get_recent_posts(hours=48, timeframe=timeframe)
             
             token_posts = [p for p in recent_posts if token.upper() in p.get('content', '')]
             
@@ -2223,26 +2283,26 @@ class CryptoAnalysisBot:
         try:
             # Get the current date and time with proper timezone handling
             now = strip_timezone(datetime.now())
-        
+    
             # Calculate the start of the current day (midnight)
             today_start = strip_timezone(datetime(now.year, now.month, now.day, 0, 0, 0))
-        
+    
             # Get configured maximum daily tech posts
-            max_daily_posts = self.config.TECH_CONTENT_CONFIG.get('max_daily_tech_posts', 6)
-        
+            max_daily_posts = config.TECH_CONTENT_CONFIG.get('max_daily_tech_posts', 6)
+    
             tech_posts = {}
             tech_posts_today = 0
             last_tech_post = None
-        
+    
             # Query database only for posts from the current calendar day
-            if self.config.db:
+            if self.db:
                 try:
                     # Calculate hours since midnight for database query
                     hours_since_midnight = safe_datetime_diff(now, today_start) / 3600
-                
+            
                     # Get posts only from the current day
-                    recent_posts = self.config.db.get_recent_posts(hours=hours_since_midnight)
-                
+                    recent_posts = self.db.get_recent_posts(hours=hours_since_midnight)
+            
                     # Filter to tech-related posts and verify they're from today
                     for post in recent_posts:
                         if 'tech_category' in post:
@@ -2253,28 +2313,28 @@ class CryptoAnalysisBot:
                                 if category not in tech_posts:
                                     tech_posts[category] = []
                                 tech_posts[category].append(post)
-                            
+                        
                                 # Track the most recent tech post timestamp
                                 if last_tech_post is None or post_time > last_tech_post:
                                     last_tech_post = post_time
-                
+            
                     # Count today's tech posts
                     tech_posts_today = sum(len(posts) for posts in tech_posts.values())
-                
+            
                     logger.logger.debug(
                         f"Daily tech posts: {tech_posts_today}/{max_daily_posts} since midnight " 
                         f"({hours_since_midnight:.1f} hours ago)"
                     )
-                
+            
                 except Exception as db_err:
                     logger.logger.warning(f"Error retrieving tech posts: {str(db_err)}")
                     tech_posts_today = 0
                     last_tech_post = today_start  # Default to start of day if error
-                
+            
             # If no posts found today, set default last post to start of day
             if last_tech_post is None:
                 last_tech_post = today_start
-        
+    
             # Check if maximum posts for today has been reached
             max_reached = tech_posts_today >= max_daily_posts
             if max_reached:
@@ -2286,7 +2346,7 @@ class CryptoAnalysisBot:
                     f"Daily tech post count: {tech_posts_today}/{max_daily_posts} - " 
                     f"additional posts allowed today"
                 )
-            
+        
             # Return comprehensive stats
             return {
                 'tech_posts_today': tech_posts_today,
@@ -2297,45 +2357,128 @@ class CryptoAnalysisBot:
                 'categories_posted': list(tech_posts.keys()),
                 'posts_by_category': {k: len(v) for k, v in tech_posts.items()}
             }
-        
+    
         except Exception as e:
             logger.log_error("Daily Tech Post Count", str(e))
+            # The now variable needs to be defined before using it in exception handling
+            current_now = strip_timezone(datetime.now())
             # Return safe defaults
             return {
                 'tech_posts_today': 0,
-                'max_daily_posts': self.config.TECH_CONTENT_CONFIG.get('max_daily_posts', 6),
-                'last_tech_post': strip_timezone(datetime.now() - timedelta(hours=24)),
-                'day_start': strip_timezone(datetime(now.year, now.month, now.day, 0, 0, 0)),
+                'max_daily_posts': config.TECH_CONTENT_CONFIG.get('max_daily_posts', 6),
+                'last_tech_post': strip_timezone(current_now - timedelta(hours=24)),
+                'day_start': strip_timezone(datetime(current_now.year, current_now.month, current_now.day, 0, 0, 0)),
                 'max_reached': False,
                 'categories_posted': [],
                 'posts_by_category': {}
             }
+    @ensure_naive_datetimes
     def get_posts_since_timestamp(self, timestamp: str) -> List[Dict[str, Any]]:
         """
         Get all posts since a specific timestamp
     
         Args:
             timestamp: ISO format timestamp string
-        
+    
         Returns:
             List of posts
         """
-        conn, cursor = self._get_connection()
-    
         try:
-            cursor.execute("""
-                SELECT * FROM posted_content
-                WHERE timestamp >= ?
-                ORDER BY timestamp DESC
-            """, (timestamp,))
-        
-            return cursor.fetchall()
+            # Use the database from the config instead of trying to get a connection directly
+            if not hasattr(self, 'db') or not self.db:
+                logger.logger.error("Database not initialized")
+                return []
+            
+            # Get a database connection and cursor
+            conn = None
+            cursor = None
+            try:
+                # Try to access database using the same pattern used elsewhere in the code
+                if hasattr(self.db, 'conn'):
+                    conn = self.db.conn
+                    cursor = conn.cursor()
+                elif hasattr(self.db, '_get_connection'):
+                    conn, cursor = self.db._get_connection()
+                else:
+                    # As a last resort, check if config has a db
+                    if hasattr(self, 'config') and hasattr(self.config, 'db'):
+                        if hasattr(self.config.db, 'conn'):
+                            conn = self.config.db.conn
+                            cursor = conn.cursor()
+                        elif hasattr(self.config.db, '_get_connection'):
+                            conn, cursor = self.config.db._get_connection()
+            except AttributeError as ae:
+                logger.logger.error(f"Database attribute error: {str(ae)}")
+            except Exception as conn_err:
+                logger.logger.error(f"Failed to get database connection: {str(conn_err)}")
+                
+            if not conn or not cursor:
+                logger.logger.error("Could not obtain database connection or cursor")
+                return []
+    
+            # Ensure timestamp is properly formatted
+            # Check if timestamp is already a datetime
+            if isinstance(timestamp, datetime):
+                # Convert to string using the same format as used elsewhere
+                timestamp_str = strip_timezone(timestamp).isoformat()
+            else:
+                # Assume it's a string, but verify it's in the expected format
+                try:
+                    # Parse timestamp string to ensure it's valid
+                    dt = datetime.fromisoformat(timestamp)
+                    # Ensure timezone handling is consistent
+                    timestamp_str = strip_timezone(dt).isoformat()
+                except ValueError:
+                    logger.logger.error(f"Invalid timestamp format: {timestamp}")
+                    return []
+    
+            # Execute the query
+            try:
+                query = """
+                    SELECT * FROM posted_content
+                    WHERE timestamp >= ?
+                    ORDER BY timestamp DESC
+                """
+                cursor.execute(query, (timestamp_str,))
+            
+                # Fetch all results
+                results = cursor.fetchall()
+            
+                # Convert rows to dictionaries if needed
+                if results:
+                    if not isinstance(results[0], dict):
+                        # Get column names from cursor description
+                        columns = [desc[0] for desc in cursor.description]
+                        # Convert each row to a dictionary
+                        dict_results = []
+                        for row in results:
+                            row_dict = {columns[i]: value for i, value in enumerate(row)}
+                            dict_results.append(row_dict)
+                        results = dict_results
+                
+                    # Process datetime fields to ensure consistent handling
+                    for post in results:
+                        if 'timestamp' in post and post['timestamp']:
+                            # Convert timestamp strings to datetime objects with consistent handling
+                            try:
+                                if isinstance(post['timestamp'], str):
+                                    post['timestamp'] = strip_timezone(datetime.fromisoformat(post['timestamp']))
+                            except ValueError:
+                                # If conversion fails, leave as string
+                                pass
+            
+                return results
+            
+            except Exception as query_err:
+                logger.logger.error(f"Query execution error: {str(query_err)}")
+                return []
+            
         except Exception as e:
             logger.log_error("Get Posts Since Timestamp", str(e))
             return []
     
     @ensure_naive_datetimes
-    def _should_post_tech_content(self, market_data: Dict[str, Any] = None) -> Tuple[bool, Dict[str, Any]]:
+    def _should_post_tech_content(self, market_data: Optional[Dict[str, Any]] = None) -> Tuple[bool, Dict[str, Any]]:
         """
         Determine if tech content should be posted, and select a topic
         Uses calendar day-based counters with midnight reset
@@ -2349,7 +2492,7 @@ class CryptoAnalysisBot:
         """
         try:
             # Check if tech content is enabled
-            if not self.config.TECH_CONTENT_CONFIG.get('enabled', False):
+            if not config.TECH_CONTENT_CONFIG.get('enabled', False):
                 logger.logger.debug("Tech content posting disabled in configuration")
                 return False, {}
     
@@ -2383,7 +2526,7 @@ class CryptoAnalysisBot:
             # Check if enough time has passed since last tech post
             last_tech_post = daily_metrics['last_tech_post']
             hours_since_last = safe_datetime_diff(strip_timezone(datetime.now()), last_tech_post) / 3600
-            post_frequency = self.config.TECH_CONTENT_CONFIG.get('post_frequency', 4)
+            post_frequency = config.TECH_CONTENT_CONFIG.get('post_frequency', 4)
     
             if hours_since_last < post_frequency:
                 logger.logger.info(
@@ -2463,7 +2606,7 @@ class CryptoAnalysisBot:
                 }
                
                 # Store using the generic JSON data storage
-                self.config.db._store_json_data(
+                self.db._store_json_data(
                     data_type="timeframe_state",
                     data=timeframe_state
                 )
@@ -2505,7 +2648,7 @@ class CryptoAnalysisBot:
         """Fetch crypto data from CoinGecko with retries"""
         try:
             params = {
-                **self.config.get_coingecko_params(),
+                **config.get_coingecko_params(),
                 'ids': ','.join(self.target_chains.values()), 
                 'sparkline': True,
                 'price_change_percentage': '1h,24h,7d'  # Ensure this parameter is included
@@ -2561,7 +2704,7 @@ class CryptoAnalysisBot:
             
             # Store market data in database
             for chain, chain_data in formatted_data.items():
-                self.config.db.store_market_data(chain, chain_data)
+                self.db.store_market_data(chain, chain_data)
             
             # Check if all data was retrieved
             missing_tokens = [token for token in self.reference_tokens if token not in formatted_data]
@@ -2586,7 +2729,7 @@ class CryptoAnalysisBot:
         """Load previously saved timeframe state from database with enhanced datetime handling"""
         try:
             # Query the latest timeframe state
-            conn, cursor = self.config.db._get_connection()
+            conn, cursor = self.db._get_connection()
         
             cursor.execute("""
                 SELECT data 
@@ -2668,7 +2811,7 @@ class CryptoAnalysisBot:
             logger.logger.warning("Using default timeframe state due to error")
     
 
-    def _get_historical_price_data(self, token: str, hours: int, timeframe: str = None) -> Tuple[List[float], List[float], List[float], List[float]]:
+    def _get_historical_price_data(self, token: str, hours: int, timeframe: Optional[str] = None) -> Tuple[List[float], List[float], List[float], List[float]]:
         """
         Safely get historical price data with proper error handling
         Returns (prices, volumes, highs, lows)
@@ -2719,7 +2862,7 @@ class CryptoAnalysisBot:
             
             # Gather performance for each timeframe
             for timeframe in self.timeframes:
-                perf_stats = self.config.db.get_prediction_performance(token=token, timeframe=timeframe)
+                perf_stats = self.db.get_prediction_performance(token=token, timeframe=timeframe)
                 
                 if perf_stats:
                     result[timeframe] = {
@@ -2737,7 +2880,7 @@ class CryptoAnalysisBot:
                     }
             
             # Get cross-timeframe comparison
-            cross_comparison = self.config.db.get_prediction_comparison_across_timeframes(token)
+            cross_comparison = self.db.get_prediction_comparison_across_timeframes(token)
             
             if cross_comparison:
                 result["best_timeframe"] = cross_comparison.get("best_timeframe", {}).get("timeframe", "1h")
@@ -2761,7 +2904,7 @@ class CryptoAnalysisBot:
             result = {tf: {} for tf in self.timeframes}
             
             # Get active predictions from the database
-            active_predictions = self.config.db.get_active_predictions()
+            active_predictions = self.db.get_active_predictions()
             
             for prediction in active_predictions:
                 timeframe = prediction.get("timeframe", "1h")
@@ -2791,7 +2934,7 @@ class CryptoAnalysisBot:
         """
         try:
             # Get expired unevaluated predictions
-            all_expired = self.config.db.get_expired_unevaluated_predictions()
+            all_expired = self.db.get_expired_unevaluated_predictions()
             
             if not all_expired:
                 logger.logger.debug("No expired predictions to evaluate")
@@ -2832,7 +2975,7 @@ class CryptoAnalysisBot:
                         continue
                         
                     # Record the outcome
-                    result = self.config.db.record_prediction_outcome(prediction_id, current_price)
+                    result = self.db.record_prediction_outcome(prediction_id, current_price)
                     
                     if result:
                         logger.logger.debug(f"Evaluated {timeframe} prediction {prediction_id} for {token}")
@@ -2860,7 +3003,7 @@ class CryptoAnalysisBot:
         try:
             # Get overall performance by timeframe
             for timeframe in self.timeframes:
-                performance = self.config.db.get_prediction_performance(timeframe=timeframe)
+                performance = self.db.get_prediction_performance(timeframe=timeframe)
                 
                 total_correct = sum(p.get("correct_predictions", 0) for p in performance)
                 total_predictions = sum(p.get("total_predictions", 0) for p in performance)
@@ -2899,7 +3042,7 @@ class CryptoAnalysisBot:
         try:
             # Adjust trend thresholds based on timeframe
             if timeframe == "1h":
-                SIGNIFICANT_THRESHOLD = self.config.VOLUME_TREND_THRESHOLD  # Default (usually 15%)
+                SIGNIFICANT_THRESHOLD = config.VOLUME_TREND_THRESHOLD  # Default (usually 15%)
                 MODERATE_THRESHOLD = 5.0
             elif timeframe == "24h":
                 SIGNIFICANT_THRESHOLD = 20.0  # Higher threshold for daily predictions
@@ -2956,7 +3099,7 @@ class CryptoAnalysisBot:
             # Get performance stats for all timeframes
             overall_stats = {}
             for timeframe in self.timeframes:
-                performance_stats = self.config.db.get_prediction_performance(timeframe=timeframe)
+                performance_stats = self.db.get_prediction_performance(timeframe=timeframe)
                 
                 if not performance_stats:
                     continue
@@ -3019,7 +3162,7 @@ class CryptoAnalysisBot:
                 report += "\n"
                 
             # Ensure report isn't too long
-            max_length = self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']
+            max_length = config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']
             if len(report) > max_length:
                 # Truncate report intelligently
                 sections = report.split("==")
@@ -3063,7 +3206,7 @@ class CryptoAnalysisBot:
                     momentum_score = self._calculate_momentum_score(token, market_data, timeframe=timeframe)
                 
                     # Get latest prediction time for this token and timeframe
-                    last_prediction = self.config.db.get_active_predictions(token=token, timeframe=timeframe)
+                    last_prediction = self.db.get_active_predictions(token=token, timeframe=timeframe)
                     hours_since_prediction = 24  # Default high value
                 
                     if last_prediction:
@@ -3163,7 +3306,7 @@ class CryptoAnalysisBot:
                     raise
         
             # Store prediction in database
-            prediction_id = self.config.db.store_prediction(token, prediction, timeframe=timeframe)
+            prediction_id = self.db.store_prediction(token, prediction, timeframe=timeframe)
             logger.logger.info(f"Stored {token} {timeframe} prediction with ID {prediction_id}")
         
             return prediction
@@ -3294,7 +3437,7 @@ class CryptoAnalysisBot:
                             if self._post_analysis(analysis_to_post, timeframe="1h"):
                                 # Only store in database after successful posting
                                 if storage_data:
-                                    self.config.db.store_posted_content(**storage_data)
+                                    self.db.store_posted_content(**storage_data)
                             
                                 logger.logger.info(
                                     f"Successfully posted {token_to_analyze} "
@@ -3307,12 +3450,12 @@ class CryptoAnalysisBot:
                                     smart_money = self._analyze_smart_money_indicators(
                                         token_to_analyze, market_data[token_to_analyze], timeframe="1h"
                                     )
-                                    self.config.db.store_smart_money_indicators(token_to_analyze, smart_money)
+                                    self.db.store_smart_money_indicators(token_to_analyze, smart_money)
                             
                                     # Store market comparison data
                                     vs_market = self._analyze_token_vs_market(token_to_analyze, market_data, timeframe="1h")
                                     if vs_market:
-                                        self.config.db.store_token_market_comparison(
+                                        self.db.store_token_market_comparison(
                                             token_to_analyze,
                                             vs_market.get('vs_market_avg_change', 0),
                                             vs_market.get('vs_market_volume_growth', 0),
@@ -3367,6 +3510,40 @@ class CryptoAnalysisBot:
         except Exception as e:
             logger.log_error("Token Analysis Cycle", str(e))
 
+    def _is_tech_related_post(self, post):
+        """
+        Determine if a post is related to technology topics we're tracking
+    
+        Args:
+            post: Post dictionary containing post content and metadata
+        
+        Returns:
+            Boolean indicating if the post is tech-related
+        """
+        try:
+            # Get post text
+            post_text = post.get('text', '')
+            if not post_text:
+                return False
+            
+            # Convert to lowercase for case-insensitive matching
+            post_text = post_text.lower()
+        
+            # Tech keywords to check for
+            tech_keywords = [
+                'ai', 'artificial intelligence', 'machine learning', 'ml', 'deep learning',
+                'llm', 'large language model', 'gpt', 'claude', 'chatgpt',
+                'quantum', 'computing', 'blockchain technology', 'neural network',
+                'transformer', 'computer vision', 'nlp', 'generative ai'
+            ]
+        
+            # Check if any tech keyword is in the post text
+            return any(keyword in post_text for keyword in tech_keywords)
+        
+        except Exception as e:
+            logger.log_error("Tech Related Post Check", str(e))
+            return False
+
     @ensure_naive_datetimes
     def _decide_post_type(self, market_data: Dict[str, Any]) -> str:
         """
@@ -3394,7 +3571,7 @@ class CryptoAnalysisBot:
             # Use existing database methods instead of get_last_post_time
             try:
                 # Get recent posts from the database
-                recent_posts = self.config.db.get_recent_posts(hours=24)
+                recent_posts = self.db.get_recent_posts(hours=24)
         
                 # Find the most recent posts of each type
                 last_analysis_time = None
@@ -3813,7 +3990,7 @@ class CryptoAnalysisBot:
                 results['pattern_metrics'] = pattern_metrics
             
             # Store in database
-            self.config.db.store_smart_money_indicators(token, results)
+            self.db.store_smart_money_indicators(token, results)
             
             return results
         except Exception as e:
@@ -4344,7 +4521,7 @@ class CryptoAnalysisBot:
                 if hasattr(self, '_get_historical_price_data'):
                     try:
                         token_history = self._get_historical_price_data(token, hours=history_hours, timeframe=timeframe)
-                        token_prices = [entry.get('price', 0) for entry in token_history]
+                        token_prices = [float(entry[0]) if isinstance(entry, list) and len(entry) > 0 else 0 for entry in token_history]
                     except Exception as hist_err:
                         logger.logger.debug(f"Error getting token price history: {str(hist_err)}")
                     
@@ -4374,7 +4551,7 @@ class CryptoAnalysisBot:
                         if token_prices and hasattr(self, '_get_historical_price_data'):
                             try:
                                 ref_history = self._get_historical_price_data(ref_token, hours=history_hours, timeframe=timeframe)
-                                ref_prices = [entry.get('price', 0) for entry in ref_history]
+                                ref_prices = [float(entry[0]) if isinstance(entry, list) and len(entry) > 0 else 0 for entry in ref_history]
                             
                                 if len(token_prices) > 5 and len(ref_prices) > 5:
                                     # Match lengths
@@ -4508,7 +4685,7 @@ class CryptoAnalysisBot:
             # ----- 7. Store results in database if method exists -----
             try:
                 if hasattr(self, 'config') and hasattr(self.config, 'db') and hasattr(self.config.db, 'store_token_market_comparison'):
-                    self.config.db.store_token_market_comparison(
+                    self.db.store_token_market_comparison(
                         token,
                         vs_market_change,
                         volume_growth_diff,
@@ -4552,17 +4729,17 @@ class CryptoAnalysisBot:
             }
         
     def _calculate_relative_volatility(self, token: str, reference_tokens: List[str], 
-                                     market_data: Dict[str, Any], timeframe: str) -> Optional[float]:
+                                         market_data: Dict[str, Any], timeframe: str) -> Optional[float]:
         """
         Calculate token's volatility relative to market average
         Returns a ratio where >1 means more volatile than market, <1 means less volatile
-        
+    
         Args:
             token: Token symbol
             reference_tokens: List of reference token symbols
             market_data: Market data dictionary
             timeframe: Timeframe for analysis
-        
+    
         Returns:
             Relative volatility ratio or None if insufficient data
         """
@@ -4574,70 +4751,178 @@ class CryptoAnalysisBot:
                 hours = 7 * 24
             else:  # 7d
                 hours = 30 * 24
+        
+            # Function to safely extract prices from historical data
+            def extract_prices(history_data):
+                if history_data is None:
+                    return []
+                
+                # Handle case where history is a string (like "Never")
+                if isinstance(history_data, str):
+                    logger.logger.warning(f"History data is a string: '{history_data}'")
+                    return []
+                
+                # Ensure history_data is iterable
+                if not hasattr(history_data, '__iter__'):
+                    logger.logger.warning(f"History data is not iterable: {type(history_data)}")
+                    return []
+                
+                prices = []
             
-            # Get token history
-            token_history = self._get_historical_price_data(token, hours=hours, timeframe=timeframe)
-            if len(token_history) < 5:
+                for entry in history_data:
+                    # Skip None entries
+                    if entry is None:
+                        continue
+                    
+                    price = None
+                
+                    try:
+                        # Case 1: Dictionary with price property
+                        if isinstance(entry, dict):
+                            if 'price' in entry and entry['price'] is not None:
+                                try:
+                                    price = float(entry['price'])
+                                except (ValueError, TypeError):
+                                    # Price couldn't be converted to float
+                                    pass
+                                
+                        # Case 2: List/tuple with price as first element
+                        elif isinstance(entry, (list, tuple)) and len(entry) > 0:
+                            if entry[0] is not None:
+                                try:
+                                    price = float(entry[0])
+                                except (ValueError, TypeError):
+                                    # First element couldn't be converted to float
+                                    pass
+                                
+                        # Case 3: Entry has price attribute (but NOT for lists/tuples)
+                        # This avoids the "Cannot access attribute 'price' for class 'list[Unknown]'" error
+                        elif not isinstance(entry, (list, tuple)) and hasattr(entry, 'price'):
+                            try:
+                                price = float(entry.price)
+                            except (ValueError, TypeError, AttributeError):
+                                # Attribute access or conversion failed
+                                pass
+                            
+                        # Case 4: Entry itself is a number
+                        elif isinstance(entry, (int, float)):
+                            price = float(entry)
+                        
+                        # Add price to list if valid
+                        if price is not None and price > 0:
+                            prices.append(price)
+                        
+                    except Exception as extract_error:
+                        # Catch any other unexpected errors during extraction
+                        logger.logger.debug(f"Error extracting price: {extract_error}")
+                        continue
+                    
+                return prices
+        
+            # Get token price history and extract prices
+            try:
+                token_history = self._get_historical_price_data(token, hours=hours, timeframe=timeframe)
+                token_prices = extract_prices(token_history)
+            except Exception as token_error:
+                logger.logger.error(f"Error getting token history: {token_error}")
                 return None
             
-            token_prices = [entry.get('price', 0) for entry in token_history]
+            # Check if we have enough price data
+            if len(token_prices) < 5:
+                logger.logger.debug(f"Insufficient price data for {token}: {len(token_prices)} points, need at least 5")
+                return None
             
-            # Calculate token volatility (standard deviation of percent changes)
+            # Calculate token price changes
             token_changes = []
             for i in range(1, len(token_prices)):
                 if token_prices[i-1] > 0:
-                    pct_change = ((token_prices[i] / token_prices[i-1]) - 1) * 100
-                    token_changes.append(pct_change)
+                    try:
+                        pct_change = ((token_prices[i] / token_prices[i-1]) - 1) * 100
+                        token_changes.append(pct_change)
+                    except (ZeroDivisionError, OverflowError):
+                        continue
                     
-            if not token_changes:
+            if len(token_changes) < 2:
+                logger.logger.debug(f"Insufficient price changes for {token}: {len(token_changes)} changes, need at least 2")
                 return None
-                
-            token_volatility = statistics.stdev(token_changes) if len(token_changes) > 1 else 0
+            
+            # Calculate token volatility (standard deviation)
+            try:
+                token_volatility = statistics.stdev(token_changes)
+            except statistics.StatisticsError as stats_error:
+                logger.logger.error(f"Error calculating token volatility: {stats_error}")
+                return None
             
             # Calculate market average volatility
             market_volatilities = []
-            
+        
             for ref_token in reference_tokens:
-                if ref_token in market_data:
+                if ref_token not in market_data:
+                    continue
+                
+                try:
+                    # Get reference token price history and extract prices
                     ref_history = self._get_historical_price_data(ref_token, hours=hours, timeframe=timeframe)
-                    if len(ref_history) < 5:
+                    ref_prices = extract_prices(ref_history)
+                
+                    # Check if we have enough price data
+                    if len(ref_prices) < 5:
                         continue
-                        
-                    ref_prices = [entry.get('price', 0) for entry in ref_history]
                     
+                    # Calculate reference token price changes
                     ref_changes = []
                     for i in range(1, len(ref_prices)):
                         if ref_prices[i-1] > 0:
-                            pct_change = ((ref_prices[i] / ref_prices[i-1]) - 1) * 100
-                            ref_changes.append(pct_change)
+                            try:
+                                pct_change = ((ref_prices[i] / ref_prices[i-1]) - 1) * 100
+                                ref_changes.append(pct_change)
+                            except (ZeroDivisionError, OverflowError):
+                                continue
                             
-                    if len(ref_changes) > 1:
-                        ref_volatility = statistics.stdev(ref_changes)
-                        market_volatilities.append(ref_volatility)
+                    # Only calculate volatility if we have enough changes
+                    if len(ref_changes) >= 2:
+                        try:
+                            ref_volatility = statistics.stdev(ref_changes)
+                            market_volatilities.append(ref_volatility)
+                        except statistics.StatisticsError:
+                            continue
+                        
+                except Exception as ref_error:
+                    # Continue with other tokens if there's an error with this one
+                    logger.logger.debug(f"Error processing reference token {ref_token}: {ref_error}")
+                    continue
+        
+            # Check if we have enough market volatility data
+            if not market_volatilities:
+                logger.logger.debug(f"No market volatilities calculated for comparison")
+                return None
             
+            # Calculate market average volatility
+            market_avg_volatility = statistics.mean(market_volatilities)
+        
             # Calculate relative volatility
-            if market_volatilities:
-                market_avg_volatility = statistics.mean(market_volatilities)
-                if market_avg_volatility > 0:
-                    return token_volatility / market_avg_volatility
-            
-            return None
+            if market_avg_volatility > 0:
+                relative_volatility = token_volatility / market_avg_volatility
+                return relative_volatility
+            else:
+                logger.logger.debug(f"Market average volatility is zero")
+                return None
             
         except Exception as e:
             logger.log_error(f"Calculate Relative Volatility - {token} ({timeframe})", str(e))
             return None
 
     def _calculate_correlations(self, token: str, market_data: Dict[str, Any], 
-                              timeframe: str = "1h") -> Dict[str, float]:
+                                  timeframe: str = "1h") -> Dict[str, Any]:
         """
         Calculate token correlations with the market
         Adjust correlation window based on timeframe
-        
+    
         Args:
             token: Token symbol
             market_data: Market data dictionary
             timeframe: Timeframe for analysis
-            
+        
         Returns:
             Dictionary of correlation metrics
         """
@@ -4645,10 +4930,10 @@ class CryptoAnalysisBot:
             token_data = market_data.get(token, {})
             if not token_data:
                 return {'timeframe': timeframe}
-                
+            
             # Filter out the token itself from reference tokens to avoid self-comparison
             reference_tokens = [t for t in self.reference_tokens if t != token]
-            
+        
             # Select appropriate reference tokens based on timeframe and relevance
             if timeframe == "1h":
                 # For hourly, just use major tokens
@@ -4657,108 +4942,189 @@ class CryptoAnalysisBot:
                 # For daily, use more tokens
                 reference_tokens = ["BTC", "ETH", "SOL", "BNB", "XRP"]
             # For weekly, use all tokens (default)
-            
+        
             correlations = {}
-            
+        
             # Calculate correlation with each reference token
             for ref_token in reference_tokens:
                 if ref_token not in market_data:
                     continue
-                    
+                
                 ref_data = market_data[ref_token]
-                
-                # Time window for correlation calculation based on timeframe
-                if timeframe == "1h":
-                    # Use 24h change for hourly predictions (short-term)
-                    price_correlation_metric = abs(token_data['price_change_percentage_24h'] - ref_data['price_change_percentage_24h'])
-                elif timeframe == "24h":
-                    # For daily, check if we have 7d change data available
-                    if 'price_change_percentage_7d' in token_data and 'price_change_percentage_7d' in ref_data:
-                        price_correlation_metric = abs(token_data['price_change_percentage_7d'] - ref_data['price_change_percentage_7d'])
-                    else:
-                        # Fall back to 24h change if 7d not available
-                        price_correlation_metric = abs(token_data['price_change_percentage_24h'] - ref_data['price_change_percentage_24h'])
-                else:  # 7d
-                    # For weekly, use historical correlation if available
-                    # Get historical data with longer window
-                    token_history = self._get_historical_price_data(token, hours=30*24, timeframe=timeframe)
-                    ref_history = self._get_historical_price_data(ref_token, hours=30*24, timeframe=timeframe)
-                    
-                    if len(token_history) >= 14 and len(ref_history) >= 14:
-                        # Calculate 14-day rolling correlation
-                        token_prices = [entry.get('price', 0) for entry in token_history[:14]]
-                        ref_prices = [entry.get('price', 0) for entry in ref_history[:14]]
-                        
-                        if len(token_prices) == len(ref_prices) and len(token_prices) > 2:
-                            try:
-                                # Calculate correlation coefficient
-                                historical_corr = np.corrcoef(token_prices, ref_prices)[0, 1]
-                                price_correlation_metric = abs(1 - historical_corr)
-                            except:
-                                # Fall back to 24h change if correlation fails
-                                price_correlation_metric = abs(token_data['price_change_percentage_24h'] - ref_data['price_change_percentage_24h'])
-                        else:
-                            price_correlation_metric = abs(token_data['price_change_percentage_24h'] - ref_data['price_change_percentage_24h'])
-                    else:
-                        price_correlation_metric = abs(token_data['price_change_percentage_24h'] - ref_data['price_change_percentage_24h'])
-                
-                # Calculate price correlation (convert difference to correlation coefficient)
-                # Smaller difference = higher correlation
-                max_diff = 15 if timeframe == "1h" else 25 if timeframe == "24h" else 40
-                price_correlation = 1 - min(1, price_correlation_metric / max_diff)
-                
-                # Volume correlation (simplified)
-                volume_correlation = abs(
-                    (token_data['volume'] - ref_data['volume']) / 
-                    max(token_data['volume'], ref_data['volume'])
-                )
-                volume_correlation = 1 - volume_correlation  # Convert to correlation coefficient
-                
-                correlations[f'price_correlation_{ref_token}'] = price_correlation
-                correlations[f'volume_correlation_{ref_token}'] = volume_correlation
             
+                # Time window for correlation calculation based on timeframe
+                try:
+                    if timeframe == "1h":
+                        # Use 24h change for hourly predictions (short-term)
+                        price_correlation_metric = abs(token_data.get('price_change_percentage_24h', 0) - 
+                                                     ref_data.get('price_change_percentage_24h', 0))
+                    elif timeframe == "24h":
+                        # For daily, check if we have 7d change data available
+                        if ('price_change_percentage_7d' in token_data and 
+                            'price_change_percentage_7d' in ref_data):
+                            price_correlation_metric = abs(token_data.get('price_change_percentage_7d', 0) - 
+                                                         ref_data.get('price_change_percentage_7d', 0))
+                        else:
+                            # Fall back to 24h change if 7d not available
+                            price_correlation_metric = abs(token_data.get('price_change_percentage_24h', 0) - 
+                                                         ref_data.get('price_change_percentage_24h', 0))
+                    else:  # 7d
+                        # For weekly, use historical correlation if available
+                        # Get historical data with longer window and handle potential "Never" returns
+                        token_history = None
+                        ref_history = None
+                    
+                        try:
+                            token_history = self._get_historical_price_data(token, hours=30*24, timeframe=timeframe)
+                            # Ensure token_history is not a string or None
+                            if isinstance(token_history, str) or token_history is None:
+                                token_history = []
+                        except Exception as th_err:
+                            logger.logger.debug(f"Error getting token history: {str(th_err)}")
+                            token_history = []
+                        
+                        try:
+                            ref_history = self._get_historical_price_data(ref_token, hours=30*24, timeframe=timeframe)
+                            # Ensure ref_history is not a string or None
+                            if isinstance(ref_history, str) or ref_history is None:
+                                ref_history = []
+                        except Exception as rh_err:
+                            logger.logger.debug(f"Error getting reference history: {str(rh_err)}")
+                            ref_history = []
+                    
+                        # Safely extract prices from histories
+                        if (isinstance(token_history, (list, tuple)) and 
+                            isinstance(ref_history, (list, tuple)) and 
+                            len(token_history) >= 14 and 
+                            len(ref_history) >= 14):
+                        
+                            token_prices = []
+                            ref_prices = []
+                        
+                            # Extract token prices safely
+                            for entry in token_history[:14]:
+                                price = None
+                                if isinstance(entry, dict) and 'price' in entry:
+                                    try:
+                                        price = float(entry['price'])
+                                        token_prices.append(price)
+                                    except (ValueError, TypeError):
+                                        pass
+                                elif isinstance(entry, (list, tuple)) and len(entry) > 0:
+                                    try:
+                                        price = float(entry[0])
+                                        token_prices.append(price)
+                                    except (ValueError, TypeError):
+                                        pass
+                                    
+                            # Extract reference prices safely
+                            for entry in ref_history[:14]:
+                                price = None
+                                if isinstance(entry, dict) and 'price' in entry:
+                                    try:
+                                        price = float(entry['price'])
+                                        ref_prices.append(price)
+                                    except (ValueError, TypeError):
+                                        pass
+                                elif isinstance(entry, (list, tuple)) and len(entry) > 0:
+                                    try:
+                                        price = float(entry[0])
+                                        ref_prices.append(price)
+                                    except (ValueError, TypeError):
+                                        pass
+                        
+                            # Calculate historical correlation if we have enough data
+                            if len(token_prices) == len(ref_prices) and len(token_prices) > 2:
+                                try:
+                                    # Calculate correlation coefficient
+                                    historical_corr = np.corrcoef(token_prices, ref_prices)[0, 1]
+                                    price_correlation_metric = abs(1 - historical_corr)
+                                except Exception:
+                                    # Fall back to 24h change if correlation fails
+                                    price_correlation_metric = abs(token_data.get('price_change_percentage_24h', 0) - 
+                                                                 ref_data.get('price_change_percentage_24h', 0))
+                            else:
+                                price_correlation_metric = abs(token_data.get('price_change_percentage_24h', 0) - 
+                                                             ref_data.get('price_change_percentage_24h', 0))
+                        else:
+                            price_correlation_metric = abs(token_data.get('price_change_percentage_24h', 0) - 
+                                                         ref_data.get('price_change_percentage_24h', 0))
+                
+                    # Calculate price correlation (convert difference to correlation coefficient)
+                    # Smaller difference = higher correlation
+                    max_diff = 15 if timeframe == "1h" else 25 if timeframe == "24h" else 40
+                    price_correlation = 1 - min(1, price_correlation_metric / max_diff)
+                
+                    # Volume correlation (simplified)
+                    volume_correlation = 0.0
+                    try:
+                        token_volume = float(token_data.get('volume', 0))
+                        ref_volume = float(ref_data.get('volume', 0))
+                    
+                        if token_volume > 0 and ref_volume > 0:
+                            volume_correlation = 1 - abs((token_volume - ref_volume) / max(token_volume, ref_volume))
+                    except (ValueError, TypeError, ZeroDivisionError):
+                        volume_correlation = 0.0
+                
+                    correlations[f'price_correlation_{ref_token}'] = price_correlation
+                    correlations[f'volume_correlation_{ref_token}'] = volume_correlation
+                
+                except Exception as token_err:
+                    logger.logger.debug(f"Error calculating correlation for {ref_token}: {str(token_err)}")
+                    correlations[f'price_correlation_{ref_token}'] = 0.0
+                    correlations[f'volume_correlation_{ref_token}'] = 0.0
+        
             # Calculate average correlations
             price_correlations = [v for k, v in correlations.items() if 'price_correlation_' in k]
             volume_correlations = [v for k, v in correlations.items() if 'volume_correlation_' in k]
-            
-            correlations['avg_price_correlation'] = statistics.mean(price_correlations) if price_correlations else 0
-            correlations['avg_volume_correlation'] = statistics.mean(volume_correlations) if volume_correlations else 0
-            
+        
+            correlations['avg_price_correlation'] = statistics.mean(price_correlations) if price_correlations else 0.0
+            correlations['avg_volume_correlation'] = statistics.mean(volume_correlations) if volume_correlations else 0.0
+        
             # Add BTC dominance correlation for longer timeframes
             if timeframe in ["24h", "7d"] and 'BTC' in market_data:
-                btc_mc = market_data['BTC'].get('market_cap', 0)
-                total_mc = sum([data.get('market_cap', 0) for data in market_data.values()])
-                
+                btc_mc = float(market_data['BTC'].get('market_cap', 0))
+                total_mc = sum([float(data.get('market_cap', 0)) for data in market_data.values()])
+            
                 if total_mc > 0:
                     btc_dominance = (btc_mc / total_mc) * 100
-                    btc_change = market_data['BTC'].get('price_change_percentage_24h', 0)
-                    token_change = token_data.get('price_change_percentage_24h', 0)
-                    
+                    btc_change = float(market_data['BTC'].get('price_change_percentage_24h', 0))
+                    token_change = float(token_data.get('price_change_percentage_24h', 0))
+                
                     # Simple heuristic: if token moves opposite to BTC and dominance is high,
                     # it might be experiencing a rotation from/to BTC
                     btc_rotation_indicator = (btc_change * token_change < 0) and (btc_dominance > 50)
-                    
-                    correlations['btc_dominance'] = btc_dominance
-                    correlations['btc_rotation_indicator'] = btc_rotation_indicator
-            
+                
+                    correlations['btc_dominance'] = float(btc_dominance)
+                    correlations['btc_rotation_indicator'] = bool(btc_rotation_indicator)
+        
+            # Add timeframe to correlations dictionary
+            correlations['timeframe'] = timeframe
+        
             # Store correlation data for any token using the generic method
-            self.config.db.store_token_correlations(token, correlations)
-            
+            try:
+                self.db.store_token_correlations(token, correlations)
+            except Exception as db_err:
+                logger.logger.debug(f"Error storing correlations: {str(db_err)}")
+        
             logger.logger.debug(
-                f"{token} correlations calculated ({timeframe}) - Avg Price: {correlations['avg_price_correlation']:.2f}, "
-                f"Avg Volume: {correlations['avg_volume_correlation']:.2f}"
+                f"{token} correlations calculated ({timeframe}) - "
+                f"Avg Price: {correlations.get('avg_price_correlation', 0.0):.2f}, "
+                f"Avg Volume: {correlations.get('avg_volume_correlation', 0.0):.2f}"
             )
-            
+        
             return correlations
-            
+        
         except Exception as e:
             logger.log_error(f"Correlation Calculation - {token} ({timeframe})", str(e))
+            # Return consistent type on error
             return {
                 'avg_price_correlation': 0.0,
                 'avg_volume_correlation': 0.0,
                 'timeframe': timeframe
             }
 
+    @ensure_naive_datetimes
     def _generate_correlation_report(self, market_data: Dict[str, Any], timeframe: str = "1h") -> str:
         """
         Generate a report of correlations between top tokens
@@ -4767,15 +5133,15 @@ class CryptoAnalysisBot:
         Args:
             market_data: Market data dictionary
             timeframe: Timeframe for analysis
-        
+    
         Returns:
             Formatted correlation report as string
         """
         try:
-            # Fix 1: Add check for market_data being None
+            # Check if market_data is None or empty
             if not market_data:
                 return f"Failed to generate {timeframe} correlation report: No market data available"
-            
+        
             # Select tokens to include based on timeframe
             if timeframe == "1h":
                 tokens = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP']  # Focus on major tokens for hourly
@@ -4786,11 +5152,12 @@ class CryptoAnalysisBot:
     
             # Create correlation matrix and include a report ID for tracking
             correlation_matrix = {}
-            report_id = f"corr_matrix_{timeframe}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            # Use specialized datetime handling for report ID
+            now = strip_timezone(datetime.now())
+            report_id = f"corr_matrix_{timeframe}_{now.strftime('%Y%m%d%H%M%S')}"
         
             for token1 in tokens:
                 correlation_matrix[token1] = {}
-                # Fix 2: Properly nest the token2 loop inside the token1 loop
                 for token2 in tokens:
                     if token1 == token2:
                         correlation_matrix[token1][token2] = 1.0
@@ -4802,52 +5169,123 @@ class CryptoAnalysisBot:
                 
                     # Adjust correlation calculation based on timeframe
                     if timeframe == "1h":
-                        # For hourly, use 24h price change
-                        price_change1 = market_data[token1]['price_change_percentage_24h']
-                        price_change2 = market_data[token2]['price_change_percentage_24h']
-                    
-                        # Calculate simple correlation
-                        price_direction1 = 1 if price_change1 > 0 else -1
-                        price_direction2 = 1 if price_change2 > 0 else -1
+                        # For hourly, use 24h price change - direct calculation with proper type conversion
+                        pd1 = 1 if float(market_data[token1].get('price_change_percentage_24h', 0)) > 0 else -1
+                        pd2 = 1 if float(market_data[token2].get('price_change_percentage_24h', 0)) > 0 else -1
                     
                         # Basic correlation (-1.0 to 1.0)
-                        correlation = 1.0 if price_direction1 == price_direction2 else -1.0
+                        correlation = 1.0 if pd1 == pd2 else -1.0
                     else:
                         # For longer timeframes, try to use more sophisticated correlation
-                        # Get historical data
-                        token1_history = self._get_historical_price_data(token1, timeframe=timeframe)
-                        token2_history = self._get_historical_price_data(token2, timeframe=timeframe)
+                        # Determine the hours parameter based on the timeframe
+                        hours_param = 24 if timeframe == "24h" else 168  # 24 hours or 7 days
                     
-                        if len(token1_history) >= 5 and len(token2_history) >= 5:
-                            # Extract prices for correlation calculation
-                            prices1 = [entry.get('price', 0) for entry in token1_history]
-                            prices2 = [entry.get('price', 0) for entry in token2_history]
+                        token1_history = None
+                        token2_history = None
+                    
+                        try:
+                            # Get historical data with hours parameter
+                            token1_history = self._get_historical_price_data(token1, hours=hours_param, timeframe=timeframe)
+                            token2_history = self._get_historical_price_data(token2, hours=hours_param, timeframe=timeframe)
                         
-                            try:
-                                # Calculate Pearson correlation
-                                correlation = np.corrcoef(prices1, prices2)[0, 1]
-                                if np.isnan(correlation):
-                                    # Fall back to simple method if NaN
-                                    price_direction1 = 1 if market_data[token1]['price_change_percentage_24h'] > 0 else -1
-                                    price_direction2 = 1 if market_data[token2]['price_change_percentage_24h'] > 0 else -1
-                                    correlation = 1.0 if price_direction1 == price_direction2 else -1.0
-                            except:
-                                # Fall back to simple method if calculation fails
-                                price_direction1 = 1 if market_data[token1]['price_change_percentage_24h'] > 0 else -1
-                                price_direction2 = 1 if market_data[token2]['price_change_percentage_24h'] > 0 else -1
-                                correlation = 1.0 if price_direction1 == price_direction2 else -1.0
-                        else:
-                            # Not enough historical data, use simple method
-                            price_direction1 = 1 if market_data[token1]['price_change_percentage_24h'] > 0 else -1
-                            price_direction2 = 1 if market_data[token2]['price_change_percentage_24h'] > 0 else -1
-                            correlation = 1.0 if price_direction1 == price_direction2 else -1.0
+                            # Handle "Never" strings or None values
+                            if isinstance(token1_history, str) or token1_history is None:
+                                token1_history = []
+                            if isinstance(token2_history, str) or token2_history is None:
+                                token2_history = []
                         
+                            if len(token1_history) >= 5 and len(token2_history) >= 5:
+                                # Extract prices for correlation calculation
+                                prices1 = []
+                                prices2 = []
+                            
+                                # Extract prices from token1 history
+                                for entry in token1_history:
+                                    if isinstance(entry, dict) and 'price' in entry:
+                                        try:
+                                            prices1.append(float(entry['price']))
+                                        except (ValueError, TypeError):
+                                            pass
+                                    elif isinstance(entry, (list, tuple)) and len(entry) > 0:
+                                        try:
+                                            prices1.append(float(entry[0]))
+                                        except (ValueError, TypeError):
+                                            pass
+                            
+                                # Extract prices from token2 history
+                                for entry in token2_history:
+                                    if isinstance(entry, dict) and 'price' in entry:
+                                        try:
+                                            prices2.append(float(entry['price']))
+                                        except (ValueError, TypeError):
+                                            pass
+                                    elif isinstance(entry, (list, tuple)) and len(entry) > 0:
+                                        try:
+                                            prices2.append(float(entry[0]))
+                                        except (ValueError, TypeError):
+                                            pass
+                            
+                                # Calculate correlation if we have enough data
+                                if len(prices1) > 2 and len(prices2) > 2:
+                                    try:
+                                        # Ensure equal lengths
+                                        min_length = min(len(prices1), len(prices2))
+                                        prices1 = prices1[:min_length]
+                                        prices2 = prices2[:min_length]
+                                    
+                                        # Calculate correlation coefficient if numpy is available
+                                        if hasattr(np, 'corrcoef'):
+                                            try:
+                                                historical_corr = np.corrcoef(prices1, prices2)[0, 1]
+                                                if not np.isnan(historical_corr):
+                                                    correlation = historical_corr
+                                                else:
+                                                    # Fall back to simple direction correlation
+                                                    pd1 = 1 if float(market_data[token1].get('price_change_percentage_24h', 0)) > 0 else -1
+                                                    pd2 = 1 if float(market_data[token2].get('price_change_percentage_24h', 0)) > 0 else -1
+                                                    correlation = 1.0 if pd1 == pd2 else -1.0
+                                            except Exception:
+                                                # Fall back to simple direction correlation
+                                                pd1 = 1 if float(market_data[token1].get('price_change_percentage_24h', 0)) > 0 else -1
+                                                pd2 = 1 if float(market_data[token2].get('price_change_percentage_24h', 0)) > 0 else -1
+                                                correlation = 1.0 if pd1 == pd2 else -1.0
+                                        else:
+                                            # Fall back if numpy not available
+                                            pd1 = 1 if float(market_data[token1].get('price_change_percentage_24h', 0)) > 0 else -1
+                                            pd2 = 1 if float(market_data[token2].get('price_change_percentage_24h', 0)) > 0 else -1
+                                            correlation = 1.0 if pd1 == pd2 else -1.0
+                                    except Exception:
+                                        # Fall back to simple correlation on calculation error
+                                        pd1 = 1 if float(market_data[token1].get('price_change_percentage_24h', 0)) > 0 else -1
+                                        pd2 = 1 if float(market_data[token2].get('price_change_percentage_24h', 0)) > 0 else -1
+                                        correlation = 1.0 if pd1 == pd2 else -1.0
+                                else:
+                                    # Not enough price data points
+                                    pd1 = 1 if float(market_data[token1].get('price_change_percentage_24h', 0)) > 0 else -1
+                                    pd2 = 1 if float(market_data[token2].get('price_change_percentage_24h', 0)) > 0 else -1
+                                    correlation = 1.0 if pd1 == pd2 else -1.0
+                            else:
+                                # Not enough historical data
+                                pd1 = 1 if float(market_data[token1].get('price_change_percentage_24h', 0)) > 0 else -1
+                                pd2 = 1 if float(market_data[token2].get('price_change_percentage_24h', 0)) > 0 else -1
+                                correlation = 1.0 if pd1 == pd2 else -1.0
+                        except Exception as e:
+                            # Handle any errors in historical data retrieval
+                            logger.logger.debug(f"Error retrieving historical data: {str(e)}")
+                            pd1 = 1 if float(market_data[token1].get('price_change_percentage_24h', 0)) > 0 else -1
+                            pd2 = 1 if float(market_data[token2].get('price_change_percentage_24h', 0)) > 0 else -1
+                            correlation = 1.0 if pd1 == pd2 else -1.0
+                
                     correlation_matrix[token1][token2] = correlation
         
             # Check if this matrix is similar to recent posts to prevent duplication
-            if self._is_matrix_duplicate(correlation_matrix, timeframe):
-                logger.logger.warning(f"Detected duplicate {timeframe} correlation matrix, skipping")
-                return None  # Return None to signal duplicate
+                if hasattr(self, '_is_matrix_duplicate') and callable(self._is_matrix_duplicate):
+                    try:
+                        if self._is_matrix_duplicate(correlation_matrix, timeframe):
+                            logger.logger.warning(f"Detected duplicate {timeframe} correlation matrix, skipping")
+                            return ""  # Return empty string instead of None to match str return type
+                    except Exception as dupe_err:
+                        logger.logger.debug(f"Error checking for duplicate matrix: {str(dupe_err)}")
     
             # Format the report text
             if timeframe == "1h":
@@ -4857,24 +5295,31 @@ class CryptoAnalysisBot:
             else:
                 report = "7D CORRELATION MATRIX:\n\n"
     
-            # Create ASCII art heatmap
+            # Create plain text matrix representation (no ASCII art)
+            # First add header row with tokens
+            header_row = "    " # 4 spaces for alignment
+            for token in tokens:
+                header_row += f"{token.ljust(5)} "
+            report += header_row + "\n"
+        
+            # Add separator line
+            report += "    " + "-" * (6 * len(tokens)) + "\n"
+        
+            # Add each token row
             for token1 in tokens:
-                report += f"{token1} "
+                row = f"{token1.ljust(4)}"
                 for token2 in tokens:
                     corr = correlation_matrix[token1][token2]
+                    # Format correlation value to 2 decimal places
                     if token1 == token2:
-                        report += "✦ "  # Self correlation
-                    elif corr > 0.5:
-                        report += "➕ "  # Strong positive
-                    elif corr > 0:
-                        report += "📈 "  # Positive
-                    elif corr < -0.5:
-                        report += "➖ "  # Strong negative
+                        row += "1.00  "  # Self correlation is always 1.0
                     else:
-                        report += "📉 "  # Negative
-                report += "\n"
+                        row += f"{corr:5.2f} "
+                report += row + "\n"
         
-            report += "\nKey: ✦=Same ➕=Strong+ 📈=Weak+ ➖=Strong- 📉=Weak-"
+            # Add explanation
+            report += "\nPositive values indicate positive correlation, negative values indicate negative correlation."
+            report += "\nValues close to 1.0 or -1.0 indicate stronger correlations."
         
             # Add timeframe-specific insights
             if timeframe == "24h" or timeframe == "7d":
@@ -4922,13 +5367,18 @@ class CryptoAnalysisBot:
                             report += "\nPossible sector rotation detected!"
         
             # Store report details in the database for tracking
-            self._save_correlation_report(report_id, correlation_matrix, timeframe, report)
+            if hasattr(self, '_save_correlation_report') and callable(self._save_correlation_report):
+                try:
+                    self._save_correlation_report(report_id, correlation_matrix, timeframe, report)
+                except Exception as save_err:
+                    logger.logger.debug(f"Error saving correlation report: {str(save_err)}")
         
             return report
     
         except Exception as e:
             logger.log_error(f"Correlation Report - {timeframe}", str(e))
-            return f"Failed to generate {timeframe} correlation report."
+            # Return a safe default string rather than None
+            return f"Failed to generate {timeframe} correlation report due to: {str(e)}"
 
     def _is_matrix_duplicate(self, matrix: Dict[str, Dict[str, float]], timeframe: str) -> bool:
         """
@@ -4943,7 +5393,7 @@ class CryptoAnalysisBot:
         """
         try:
             # First, check posted_content table directly with a strong timeframe filter
-            conn, cursor = self.config.db._get_connection()
+            conn, cursor = self.db._get_connection()
         
             # Define timeframe prefix explicitly
             timeframe_prefix = ""
@@ -4985,30 +5435,6 @@ class CryptoAnalysisBot:
             logger.logger.warning(f"Error in duplicate check, assuming duplicate to be safe: {str(e)}")
             return True
 
-    def _generate_correlation_report(self, market_data: Dict[str, Any], timeframe: str = "1h") -> str:
-        """
-        Generate a report of correlations between top tokens with improved duplicate prevention
-    
-        Args:
-            market_data: Market data dictionary
-            timeframe: Timeframe for analysis
-        
-        Returns:
-            Formatted correlation report as string or None if would be duplicate
-        """
-        try:
-            # Check for duplicates FIRST before generating content
-            if self._is_matrix_duplicate(None, timeframe):
-                logger.logger.warning(f"Pre-emptive duplicate check: recent {timeframe} matrix already posted")
-                return None
-        
-            # Rest of your correlation report code...
-            # [Code omitted for brevity]
-        
-        except Exception as e:
-            logger.log_error(f"Correlation Report - {timeframe}", str(e))
-            return None
-
     def _save_correlation_report(self, report_id: str, matrix: Dict[str, Dict[str, float]], 
                                 timeframe: str, report_text: str) -> None:
         """
@@ -5037,7 +5463,7 @@ class CryptoAnalysisBot:
             }
         
             # Store in database (using generic_json_data table)
-            self.config.db._store_json_data(
+            self.db._store_json_data(
                 data_type='correlation_report',
                 data=report_data
             )
@@ -5250,13 +5676,13 @@ class CryptoAnalysisBot:
                 tweet += f"{rationale}\n\n"
         
             # Add accuracy tracking if available
-            performance = self.config.db.get_prediction_performance(token=token, timeframe=timeframe)
+            performance = self.db.get_prediction_performance(token=token, timeframe=timeframe)
             if performance and performance[0]["total_predictions"] > 0:
                 accuracy = performance[0]["accuracy_rate"]
                 tweet += f"Accuracy: {accuracy:.1f}% on {performance[0]['total_predictions']} predictions"
             
             # Ensure tweet is within the hard stop length
-            max_length = self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']
+            max_length = config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']
             if len(tweet) > max_length:
                 # Smart truncate to preserve essential info
                 last_paragraph = tweet.rfind("\n\n")
@@ -5271,7 +5697,7 @@ class CryptoAnalysisBot:
         
         except Exception as e:
             logger.log_error(f"Format Prediction Tweet - {token} ({timeframe})", str(e))
-            return f"#{token} {timeframe.upper()} PREDICTION: ${price:.4f} ({percent_change:+.2f}%) - {sentiment}"
+            return f"#{token} {timeframe.upper()} PREDICTION: ${prediction.get('price', 0):.4f} ({prediction.get('percent_change', 0):+.2f}%) - {prediction.get('sentiment', 'NEUTRAL')}"
 
     @ensure_naive_datetimes
     def _track_prediction(self, token: str, prediction: Dict[str, Any], relevant_tokens: List[str], timeframe: str = "1h") -> None:
@@ -5353,7 +5779,7 @@ class CryptoAnalysisBot:
                 if isinstance(token_sentiment_value, dict) and 'mood' in token_sentiment_value:
                     token_sentiment = sentiment_map.get(token_sentiment_value['mood'], 0)
                 else:
-                    token_sentiment = sentiment_map.get(token_sentiment_value, 0)
+                    token_sentiment = sentiment_map.get(str(token_sentiment_value), 0.0)  # Convert key to string
             
                 # A prediction is wrong if:
                 # 1. Bullish but price dropped more than threshold%
@@ -5454,19 +5880,19 @@ class CryptoAnalysisBot:
         tweet = ''.join(char for char in tweet if ord(char) < 0x10000)
     
         # Check for minimum length
-        min_length = self.config.TWEET_CONSTRAINTS['MIN_LENGTH']
+        min_length = config.TWEET_CONSTRAINTS['MIN_LENGTH']
         if len(tweet) < min_length:
             logger.logger.warning(f"{timeframe} analysis too short ({len(tweet)} chars). Minimum: {min_length}")
             # Not much we can do here since Claude should have generated the right length
             # We'll log but not try to fix, as Claude should be instructed correctly
     
         # Check for maximum length
-        max_length = self.config.TWEET_CONSTRAINTS['MAX_LENGTH']
+        max_length = config.TWEET_CONSTRAINTS['MAX_LENGTH']
         if len(tweet) > max_length:
             logger.logger.warning(f"{timeframe} analysis too long ({len(tweet)} chars). Maximum: {max_length}")
     
         # Check for hard stop length
-        hard_stop = self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']
+        hard_stop = config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH']
         if len(tweet) > hard_stop:
             # Smart truncation - find the last sentence boundary before the limit
             # First try to end on a period, question mark, or exclamation
@@ -5492,6 +5918,187 @@ class CryptoAnalysisBot:
             logger.logger.warning(f"Trimmed {timeframe} analysis to {len(tweet)} chars using smart truncation")
     
         return tweet
+
+    def _get_vs_market_analysis(self, token: str, market_data, timeframe: str = "1h"):
+        """
+        Analyze token performance against overall market
+        Returns metrics showing relative performance
+        """
+        try:
+            # Default response if anything fails
+            default_response = {
+                "vs_market_avg_change": 0.0,
+                "vs_market_percentile": 50.0,
+                "market_correlation": 0.0,
+                "market_sentiment": "neutral"
+            }
+    
+            if isinstance(market_data, list):
+                logger.logger.error(f"CRITICAL: market_data is a list with {len(market_data)} items")
+                if len(market_data) > 0:
+                    first_item = market_data[0]
+                    logger.logger.error(f"First item type: {type(first_item)}")
+                    if isinstance(first_item, dict):
+                        logger.logger.error(f"First item keys: {list(first_item.keys())}")
+
+            # Validate and standardize market_data
+            if not isinstance(market_data, dict):
+                logger.logger.warning(f"_get_vs_market_analysis received non-dict market_data: {type(market_data)}")
+                # Try to standardize
+                if isinstance(market_data, list):
+                    market_data = self._standardize_market_data(market_data)
+                else:
+                    return default_response
+        
+            # If standardization failed or returned empty data
+            if not market_data:
+                logger.logger.warning(f"Failed to standardize market data for {token}")
+                return default_response
+             
+            # Now safely access token data
+            token_data = market_data.get(token, {}) if isinstance(market_data, dict) else {}
+        
+            # If we couldn't standardize the data, return default response
+            if not market_data:
+                logger.logger.warning(f"Failed to standardize market data for {token}")
+                return default_response
+        
+            # Get all tokens except the one we're analyzing
+            market_tokens = [t for t in market_data.keys() if t != token]
+        
+            # Validate we have other tokens to compare against
+            if not market_tokens:
+                logger.logger.warning(f"No other tokens found for comparison with {token}")
+                return default_response
+        
+            # Calculate average market metrics
+            market_changes = []
+            market_volumes = []
+        
+            for market_token in market_tokens:
+                token_data = market_data.get(market_token, {})
+            
+                # Check if token_data is a dictionary before using get()
+                if not isinstance(token_data, dict):
+                    continue
+            
+                # Extract change data safely based on timeframe
+                if timeframe == "1h":
+                    change_key = 'price_change_percentage_1h_in_currency'
+                elif timeframe == "24h":
+                    change_key = 'price_change_percentage_24h'
+                else:  # 7d
+                    change_key = 'price_change_percentage_7d_in_currency'
+            
+                # Try alternate keys if the primary key isn't found
+                if change_key not in token_data:
+                    alternates = {
+                        'price_change_percentage_1h_in_currency': ['price_change_1h', 'change_1h', '1h_change'],
+                        'price_change_percentage_24h': ['price_change_24h', 'change_24h', '24h_change'],
+                        'price_change_percentage_7d_in_currency': ['price_change_7d', 'change_7d', '7d_change']
+                    }
+                
+                    for alt_key in alternates.get(change_key, []):
+                        if alt_key in token_data:
+                            change_key = alt_key
+                            break
+            
+                # Safely extract change value
+                change = token_data.get(change_key)
+                if change is not None:
+                    try:
+                        change_float = float(change)
+                        market_changes.append(change_float)
+                    except (ValueError, TypeError):
+                        # Skip invalid values
+                        pass
+            
+                # Extract volume data safely
+                volume_keys = ['total_volume', 'volume', 'volume_24h']
+                for volume_key in volume_keys:
+                    volume = token_data.get(volume_key)
+                    if volume is not None:
+                        try:
+                            volume_float = float(volume)
+                            market_volumes.append(volume_float)
+                            break  # Found a valid volume, no need to check other keys
+                        except (ValueError, TypeError):
+                            # Skip invalid values
+                            pass
+        
+            # If we don't have enough market data, return default analysis
+            if not market_changes:
+                logger.logger.warning(f"No market change data available for comparison with {token}")
+                return default_response
+        
+            # Calculate average market change
+            market_avg_change = sum(market_changes) / len(market_changes)
+        
+            # Get token data safely
+            token_data = market_data.get(token, {})
+        
+            # Ensure token_data is a dictionary
+            if not isinstance(token_data, dict):
+                logger.logger.warning(f"Token data for {token} is not a dictionary: {token_data}")
+                return default_response
+        
+            # Get token change based on timeframe
+            token_change = 0.0
+            if timeframe == "1h":
+                # Try primary key first, then alternates
+                keys_to_try = ['price_change_percentage_1h_in_currency', 'price_change_1h', 'change_1h', '1h_change']
+            elif timeframe == "24h":
+                keys_to_try = ['price_change_percentage_24h', 'price_change_24h', 'change_24h', '24h_change']
+            else:  # 7d
+                keys_to_try = ['price_change_percentage_7d_in_currency', 'price_change_7d', 'change_7d', '7d_change']
+        
+            # Try each key until we find a valid value
+            for key in keys_to_try:
+                if key in token_data:
+                    try:
+                        token_change = float(token_data[key])
+                        break  # Found valid value, exit loop
+                    except (ValueError, TypeError):
+                        continue  # Try next key
+        
+            # Calculate performance vs market
+            vs_market_change = token_change - market_avg_change
+        
+            # Calculate token's percentile in market (what percentage of tokens it's outperforming)
+            tokens_outperforming = sum(1 for change in market_changes if token_change > change)
+            vs_market_percentile = (tokens_outperforming / len(market_changes)) * 100
+        
+            # Calculate market correlation (simple approach)
+            market_correlation = 0.5  # Default to moderate correlation
+        
+            # Determine market sentiment
+            if vs_market_change > 3.0:
+                market_sentiment = "strongly outperforming"
+            elif vs_market_change > 1.0:
+                market_sentiment = "outperforming"
+            elif vs_market_change < -3.0:
+                market_sentiment = "strongly underperforming"
+            elif vs_market_change < -1.0:
+                market_sentiment = "underperforming"
+            else:
+                market_sentiment = "neutral"
+        
+            # Return analysis
+            return {
+                "vs_market_avg_change": vs_market_change,
+                "vs_market_percentile": vs_market_percentile,
+                "market_correlation": market_correlation,
+                "market_sentiment": market_sentiment
+            }
+    
+        except Exception as e:
+            logger.log_error(f"Token vs Market Analysis - {token} ({timeframe})", str(e))
+            return {
+                "vs_market_avg_change": 0.0,
+                "vs_market_percentile": 50.0,
+                "market_correlation": 0.0,
+                "market_sentiment": "neutral"
+            }
 
     @ensure_naive_datetimes
     def _analyze_market_sentiment(self, token, market_data, trigger_type=None, timeframe="1h"):
@@ -5669,6 +6276,10 @@ class CryptoAnalysisBot:
                 token_data = None
         
                 # Safely access token data based on the data structure
+                # Initialize standardized_data first to avoid 'unbound' errors
+                standardized_data = None  # Ensure this variable is defined
+
+                # Now proceed with the original logic
                 if isinstance(market_data, dict) and token in market_data:
                     token_data = market_data[token]
                 elif isinstance(standardized_data, dict) and token in standardized_data:
@@ -5754,18 +6365,31 @@ class CryptoAnalysisBot:
                 market_context = f"\n{token} market sentiment analysis unavailable"
     
             # Ensure we handle any required timezone conversions
-            try:
-                # If there's a utility function for timezone handling, use it
-                if hasattr(self, 'strip_timezone') and callable(self.strip_timezone):
-                    # Apply timezone handling to any datetime objects that need it
-                    pass
+                try:
+                    # For any datetime objects that need timezone handling
+                    if 'strip_timezone' in globals() and callable(strip_timezone):
+                        # Apply timezone handling to relevant datetime objects
+                        # Use locals().get() to safely check for variable existence
+                        local_vars = locals()
         
-                # If there's a need to ensure datetimes are timezone-naive
-                if hasattr(self, 'ensure_naive_datetimes') and callable(self.ensure_naive_datetimes):
-                    # Apply to any datetime objects that need it
-                    pass
-            except Exception as tz_error:
-                logger.logger.error(f"Error handling timezone data for {token}: {str(tz_error)}")
+                        # Handle 'now' if it exists and is a datetime
+                        if 'now' in local_vars and isinstance(local_vars.get('now'), datetime):
+                            # Since we can't modify local variables directly in this way, 
+                            # we need to create new variables if needed
+                            # This will work if 'now' is from outer scope
+                            now = strip_timezone(local_vars.get('now'))
+            
+                        # Handle 'target_time' if it exists and is a datetime
+                        if 'target_time' in local_vars and isinstance(local_vars.get('target_time'), datetime):
+                            target_time = strip_timezone(local_vars.get('target_time'))
+            
+                    # Check if we have the decorator function available
+                    # (This is just a verification, actual decorators would be applied at method definition)
+                    if 'ensure_naive_datetimes' not in globals() or not callable(ensure_naive_datetimes):
+                        logger.logger.debug("ensure_naive_datetimes decorator not available")
+        
+                except Exception as tz_error:
+                    logger.logger.error(f"Error handling timezone data for {token}: {str(tz_error)}")
     
             # Prepare storage_data for database
             storage_data = {
@@ -5858,19 +6482,35 @@ class CryptoAnalysisBot:
                 )
                 # Check rolling window volume trend
                 else:
+                    # Initialize variables with safe defaults BEFORE any conditional code
+                    volume_change_pct = 0.0  # Default value
+                    trend = "unknown"        # Default value
+
+                    # Get historical volume data
                     historical_volume = self._get_historical_volume_data(token, timeframe=timeframe)
+
+                    # Then try to get actual values if we have historical data
                     if historical_volume:
-                        volume_change_pct, trend = self._analyze_volume_trend(
+                        try:
+                            volume_change_pct, trend = self._analyze_volume_trend(
                             new_data[token]['volume'],
                             historical_volume,
                             timeframe=timeframe
                         )
+                        except Exception as e:
+                            # If analysis fails, we already have defaults
+                            logger.logger.debug(f"Error analyzing volume trend: {str(e)}")
                 
+                    # Log the volume trend - ensure all variables are defined
+                    volume_change_pct = 0.0 if 'volume_change_pct' not in locals() else volume_change_pct
+                    trend = "unknown" if 'trend' not in locals() else trend 
+                    timeframe = "1h" if 'timeframe' not in locals() else timeframe
+
                     # Log the volume trend
                     logger.logger.debug(
                         f"{token} rolling window volume trend ({timeframe}): {volume_change_pct:.2f}% ({trend})"
-                    )
-                
+                        )
+
                     # Check if trend is significant enough to trigger
                     if trend in ["significant_increase", "significant_decrease"]:
                         trigger_reason = f"volume_trend_{token.lower()}_{trend}_{timeframe}"
@@ -5906,7 +6546,7 @@ class CryptoAnalysisBot:
                 # Trigger prediction post based on time since last prediction
                 if not trigger_reason:
                     # Check when the last prediction was posted
-                    last_prediction = self.config.db.get_active_predictions(token=token, timeframe=timeframe)
+                    last_prediction = self.db.get_active_predictions(token=token, timeframe=timeframe)
                     if not last_prediction:
                         # No recent predictions for this timeframe, should post one
                         trigger_reason = f"prediction_needed_{token.lower()}_{timeframe}"
@@ -5915,7 +6555,7 @@ class CryptoAnalysisBot:
         # Check if regular interval has passed (only for 1h timeframe)
         if not trigger_reason and timeframe == "1h":
             time_since_last = safe_datetime_diff(datetime.now(), self.last_check_time)
-            if time_since_last >= self.config.BASE_INTERVAL:
+            if time_since_last >= config.BASE_INTERVAL:
                 trigger_reason = f"regular_interval_{timeframe}"
                 logger.logger.debug(f"Regular interval check triggered for {timeframe}")
 
@@ -5926,7 +6566,7 @@ class CryptoAnalysisBot:
         else:
             logger.logger.debug(f"No {timeframe} triggers activated for {token}, skipping update")
 
-        return should_post, trigger_reason
+        return should_post, trigger_reason if trigger_reason is not None else ""
 
     @ensure_naive_datetimes
     def _evaluate_expired_predictions(self) -> None:
@@ -5935,7 +6575,7 @@ class CryptoAnalysisBot:
         """
         try:
             # Get expired unevaluated predictions for all timeframes
-            expired_predictions = self.config.db.get_expired_unevaluated_predictions()
+            expired_predictions = self.db.get_expired_unevaluated_predictions()
         
             if not expired_predictions:
                 logger.logger.debug("No expired predictions to evaluate")
@@ -5981,7 +6621,7 @@ class CryptoAnalysisBot:
                         continue
                         
                     # Record the outcome
-                    result = self.config.db.record_prediction_outcome(prediction_id, current_price)
+                    result = self.db.record_prediction_outcome(prediction_id, current_price)
                     
                     if result:
                         logger.logger.debug(f"Evaluated {timeframe} prediction {prediction_id} for {token}")
@@ -6059,7 +6699,7 @@ class CryptoAnalysisBot:
                     
                     # Calculate sleep time until next regular check
                     time_since_last = safe_datetime_diff(datetime.now(), self.last_check_time)
-                    sleep_time = max(0, self.config.BASE_INTERVAL - time_since_last)
+                    sleep_time = max(0, config.BASE_INTERVAL - time_since_last)
                     
                     # Check if we should post a weekly summary
                     if self._generate_weekly_summary():
